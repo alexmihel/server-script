@@ -1,110 +1,70 @@
-#!/bin/bash
-
-read -p "Вы хотите создать новый сайт? (y/n): " CONFIRM
-if [[ "$CONFIRM" != "y" ]]; then
-    echo "Операция отменена."
-    exit 0
-fi
-
-# Запрос версии PHP с установкой значения по умолчанию
-read -p "Введите версию PHP (по умолчанию 8.2): " PHP_VERSION
-PHP_VERSION=${PHP_VERSION:-8.2}
-
-# Запрос имени директории проекта
-read -p "Введите имя директории проекта (например, my_project): " PROJECT_DIR
-
-PROJECT_PATH="/var/www/$PROJECT_DIR"
-if [ ! -d "$PROJECT_PATH" ]; then
-    echo "Указанная папка не существует. Пожалуйста, проверьте путь и повторите попытку."
-    exit 1
-fi
-
-# Запрос доменного имени
-read -p "Введите доменное имя (например, example.com): " DOMAIN
-
-# Проверка PHP-FPM сокета
-if ! [ -S "/var/run/php/php$PHP_VERSION-fpm.sock" ]; then
-    echo "Ошибка: PHP версии $PHP_VERSION не установлен или PHP-FPM сокет недоступен."
-    exit 1
-fi
-
-NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
-
-echo "server {
-    listen 80;
-    listen [::]:80;
-
-    server_name www.$DOMAIN;
-    
-    return 301 https://$DOMAIN\$request_uri;
-}
-
+#!/usr/bin/env bash
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
+init "$@"
+site_user
+project
+ask PHP_VERSION 'Версия PHP' 8.3
+ask DOMAIN 'Домен (без www и протокола)'
+ask INCLUDE_WWW 'Добавить www (true/false)' false
+ask CERTBOT_EMAIL 'Email для Lets Encrypt'
+[[ -d "$PROJECT_PATH/public" ]] || die 'Нет public/; сначала настройте проект.'
+sudo -u www-data test -r "$PROJECT_PATH/public/index.php" || die 'www-data не может читать public/index.php; выполните setup_laravel_project.sh.'
+[[ -S "/run/php/php$PHP_VERSION-fpm.sock" ]] || die 'Нет сокета выбранного PHP-FPM.'
+# The generated access model expects Ubuntu’s default www-data FPM pool.
+grep -Eq '^user[[:space:]]*=[[:space:]]*www-data[[:space:]]*$' "/etc/php/$PHP_VERSION/fpm/pool.d/www.conf" || die 'Ожидается FPM pool www с user=www-data.'
+apt_update
+apt-get install -y nginx certbot python3-certbot-nginx
+conf="/etc/nginx/sites-available/$DOMAIN"
+link="/etc/nginx/sites-enabled/$DOMAIN"
+marker='# Managed by server-script'
+if [[ -e "$conf" ]]; then
+    # Preserve existing TLS configuration on subsequent runs.
+    grep -Fxq "$marker" "$conf" || die 'Конфиг Nginx уже существует и не принадлежит скрипту.'
+    grep -Fq "root $PROJECT_PATH/public;" "$conf" || die 'Существующий домен указывает на другой проект.'
+    grep -Fq "unix:/run/php/php$PHP_VERSION-fpm.sock;" "$conf" || die 'В существующем домене другая версия PHP; измените конфиг вручную.'
+else
+    [[ ! -e "$link" && ! -L "$link" ]] || die 'Путь sites-enabled уже занят.'
+    names="$DOMAIN"
+    [[ "$INCLUDE_WWW" != true ]] || names="$names www.$DOMAIN"
+    cat > "$conf" <<NGINX
+$marker
 server {
     listen 80;
     listen [::]:80;
-
-    server_name $DOMAIN;
-
+    server_name $names;
     root $PROJECT_PATH/public;
-    index index.html index.htm index.php;
-
-    add_header X-Frame-Options \"SAMEORIGIN\";
-    add_header X-XSS-Protection \"1; mode=block\";
-    add_header X-Content-Type-Options \"nosniff\";
-
+    index index.php;
     charset utf-8;
-
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-Content-Type-Options "nosniff";
     location / {
-         try_files \$uri \$uri/ /index.php?\$query_string;
+        try_files \$uri \$uri/ /index.php?\$query_string;
     }
-
     location = /favicon.ico { access_log off; log_not_found off; }
-    location = /robots.txt  { access_log off; log_not_found off; }
-
-    error_page 404 /index.php;
-
-    location ~ \.php$ {
-            fastcgi_pass unix:/var/run/php/php$PHP_VERSION-fpm.sock;
-            fastcgi_index index.php;
-            fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
-            include fastcgi_params;
+    location = /robots.txt { access_log off; log_not_found off; }
+    location = /index.php {
+        fastcgi_pass unix:/run/php/php$PHP_VERSION-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
+        include fastcgi_params;
+        fastcgi_hide_header X-Powered-By;
     }
-
-    location ~ /\.(?!well-known).* {
-            deny all;
-    }
-
-    location ~ /\.ht {
-        deny all;
-    }
-}" | sudo tee "$NGINX_CONF"
-
-# Проверка и создание ссылки
-if [ -L "/etc/nginx/sites-enabled/$DOMAIN" ]; then
-    sudo rm "/etc/nginx/sites-enabled/$DOMAIN"
+    location ~ \.php$ { return 404; }
+    location ~ /\.(?!well-known).* { deny all; }
+}
+NGINX
+    ln -s "$conf" "$link"
+    if ! nginx -t; then
+        rm -- "$link" "$conf"
+        die 'Конфиг Nginx не прошёл проверку; новые файлы удалены.'
+    fi
 fi
-sudo ln -s "$NGINX_CONF" /etc/nginx/sites-enabled/
-
-sudo nginx -t
-sudo systemctl reload nginx
-
-echo "Настройка домена $DOMAIN завершена."
-
-# Установка Certbot, если он не установлен
-if ! command -v certbot &> /dev/null; then
-    echo "Установка Certbot..."
-    sudo apt update
-    sudo apt install -y certbot python3-certbot-nginx
-fi
-
-# Получение и настройка SSL-сертификата для домена и www-домена
-sudo certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"
-
-if [ $? -eq 0 ]; then
-    echo "SSL-сертификат успешно установлен для $DOMAIN."
-    sudo systemctl enable certbot.timer
-else
-    echo "Ошибка установки SSL-сертификата."
-fi
-
-echo "Настройка домена $DOMAIN с SSL завершена."
+[[ -L "$link" && $(readlink "$link") == "$conf" ]] || die 'Проверьте ссылку sites-enabled для домена.'
+nginx -t
+systemctl reload nginx
+args=(-d "$DOMAIN")
+[[ "$INCLUDE_WWW" != true ]] || args+=(-d "www.$DOMAIN")
+printf 'Для сертификата DNS всех выбранных имён должен указывать на сервер, порт 80 — быть доступен.\n'
+certbot --nginx --non-interactive --agree-tos --email "$CERTBOT_EMAIL" --redirect --keep-until-expiring "${args[@]}"
+nginx -t
+systemctl enable --now certbot.timer
+printf 'HTTPS настроен для %s.\n' "$DOMAIN"

@@ -1,0 +1,6 @@
+# Shell fragments are intentionally passed to child shells/PHP.
+disable=SC2016
+# Library values are consumed by entry points.
+disable=SC2034
+# Entry points source the shared library using a runtime-relative path.
+disable=SC1091

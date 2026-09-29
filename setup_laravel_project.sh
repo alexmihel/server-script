@@ -1,70 +1,54 @@
-#/root/setup_laravel_project.sh                                                                                                                                                                                                                       2243/2243              100%
-#!/bin/bash
-
-#2 действия добавить под пользователем сделать composer install
-# скопировать .env файл (или создать с nano)
-
-# Запрос имени пользователя
-read -p "Введите имя пользователя для настройки прав доступа: " USERNAME
-
-# Проверка, существует ли указанный пользователь
-if id "$USERNAME" &>/dev/null; then
-    echo "Пользователь $USERNAME найден."
+#!/usr/bin/env bash
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
+init "$@"
+site_user
+project
+repository
+ask PHP_VERSION 'Версия PHP' 8.3
+ask INSTALL_COMPOSER_DEPS 'Выполнить composer install (true/false)' false
+apt_update
+apt-get install -y git acl
+[[ ! -L "$PROJECT_PATH" ]] || die 'Каталог проекта не должен быть ссылкой.'
+install -d -m 755 /var/www
+if [[ -e "$PROJECT_PATH" ]]; then
+    [[ -d "$PROJECT_PATH/.git" && ! -L "$PROJECT_PATH/.git" ]] || die 'Каталог существует и не является обычным Git-репозиторием. Выберите другое PROJECT_NAME.'
+    # Check origin before taking ownership; no global safe.directory wildcard.
+    origin=$(git config --file "$PROJECT_PATH/.git/config" --get remote.origin.url)
+    [[ "$origin" == "$REPO_URL" ]] || die 'Каталог принадлежит другому репозиторию.'
+    printf 'Существующий репозиторий: исправляем права без изменения рабочей копии.\n'
+    chown -hR "$SITE_USER:$SITE_GROUP" "$PROJECT_PATH"
 else
-    echo "Пользователь $USERNAME не существует. Проверьте правильность ввода."
-    exit 1
+    as_site git ls-remote "$REPO_URL" HEAD >/dev/null
+    install -d -o "$SITE_USER" -g "$SITE_GROUP" -m 750 "$PROJECT_PATH"
+    as_site git clone -- "$REPO_URL" "$PROJECT_PATH"
 fi
-
-# Запрос URL репозитория Bitucket
-read -p "Введите URL репозитория : " REPO_URL
-
-# Запрос названия проекта для создания подкаталога
-read -p "Введите название проекта для установки: " PROJECT_NAME
-
-# Папка для установки проекта
-INSTALL_DIR="/var/www/$PROJECT_NAME"
-
-# Проверка, пустая ли указанная директория
-if [ -d "$INSTALL_DIR" ] && [ "$(ls -A $INSTALL_DIR)" ]; then
-    echo "Директория $INSTALL_DIR не пуста. Укажите пустую директорию или удалите её содержимое."
-    exit 1
+[[ -f "$PROJECT_PATH/composer.json" && -d "$PROJECT_PATH/public" ]] || die 'Ожидается Laravel-проект с composer.json и public/.'
+for path in storage bootstrap bootstrap/cache; do
+    [[ ! -L "$PROJECT_PATH/$path" ]] || die "Нельзя настраивать ACL через ссылку $path."
+done
+# Preserve executable bits, keep code read-only to www-data and private to others.
+find "$PROJECT_PATH" -type d -exec chmod u+rwx,go-rwx {} +
+find "$PROJECT_PATH" -type f -exec chmod u+rw,go-rwx {} +
+setfacl -R -P -m u:www-data:r-X "$PROJECT_PATH"
+find "$PROJECT_PATH" -type d -exec setfacl -m d:u::rwx,d:u:www-data:r-x,d:g::---,d:m::r-x,d:o::--- {} +
+setfacl -R -P -b "$PROJECT_PATH/.git"
+find "$PROJECT_PATH/.git" -type d -exec setfacl -k {} +
+chmod -R go-rwx "$PROJECT_PATH/.git"
+as_site mkdir -p "$PROJECT_PATH/storage" "$PROJECT_PATH/bootstrap/cache"
+for path in storage bootstrap/cache; do
+    setfacl -R -P -m "u:$SITE_USER:rwX,u:www-data:rwX" "$PROJECT_PATH/$path"
+    find "$PROJECT_PATH/$path" -type d -exec setfacl -m "d:u::rwx,d:u:$SITE_USER:rwx,d:u:www-data:rwx,d:g::---,d:m::rwx,d:o::---" {} +
+done
+if [[ "$INSTALL_COMPOSER_DEPS" == true ]]; then
+    [[ -f "$PROJECT_PATH/composer.lock" ]] || die 'Для production требуется composer.lock.'
+    command -v "php$PHP_VERSION" >/dev/null || die 'Выбранный PHP CLI не установлен.'
+    [[ -f /usr/local/bin/composer ]] || die 'Сначала установите Composer через server_setup.sh.'
+    cd "$PROJECT_PATH"
+    as_site "php$PHP_VERSION" /usr/local/bin/composer check-platform-reqs --lock --no-dev
+    as_site "php$PHP_VERSION" /usr/local/bin/composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+    as_site "php$PHP_VERSION" /usr/local/bin/composer check-platform-reqs --no-dev
 fi
-
-# Клонирование репозитория
-echo "Клонирование репозитория..."
-
-sudo mkdir -p "$INSTALL_DIR" || exit 1
-sudo chown "$USERNAME:$(id -gn "$USERNAME")" "$INSTALL_DIR" || exit 1
-
-if ! sudo -u "$USERNAME" -H git clone "$REPO_URL" "$INSTALL_DIR"; then
-    echo "Ошибка клонирования. Проверьте SSH-ключ пользователя $USERNAME и доступ к репозиторию." >&2
-    exit 1
-fi
-
-# Переход в папку проекта
-cd "$INSTALL_DIR" || exit
-
-echo "Настройка базовых прав доступа..."
-# 1. Устанавливаем владельца на всё (и пользователя, и группу)
-sudo chown -R "$USERNAME":"$USERNAME" "$INSTALL_DIR"
-
-# 2. Стандартные права для веба (755 для папок, 644 для файлов)
-sudo find "$INSTALL_DIR" -type d -exec chmod 755 {} \;
-sudo find "$INSTALL_DIR" -type f -exec chmod 644 {} \;
-
-echo "Настройка продвинутых прав доступа (ACL)..."
-# Установка утилиты (на случай если это чистый сервер)
-sudo apt update && sudo apt install -y acl
-
-# 3. ACL для storage и cache: 
-# Даем полные права (rwx) пользователю сайта и группе веб-сервера (www-data)
-# Применяем рекурсивно к текущим файлам (-R)
-sudo setfacl -R -m u:www-data:rwx,u:"$USERNAME":rwx "$INSTALL_DIR/storage" "$INSTALL_DIR/bootstrap/cache"
-
-# 4. Наследуемые права (Default ACL):
-# Все новые файлы в этих папках будут автоматически получать rwx для обоих
-sudo setfacl -dR -m u:www-data:rwx,u:"$USERNAME":rwx "$INSTALL_DIR/storage" "$INSTALL_DIR/bootstrap/cache"
-
-echo "Установка завершена. Права настроены корректно."
-
-echo "Установка завершена. Проект Laravel настроен и готов к использованию."
+as_site git -C "$PROJECT_PATH" status --short
+printf 'Репозиторий: %s, владелец: %s.\n' "$PROJECT_PATH" "$SITE_USER"
+printf 'Настройте Laravel .env, APP_KEY, миграции, frontend и workers согласно проекту.\n'
+printf 'Git/Composer/Artisan запускайте через sudo -H -u %s; для PHP используйте php%s.\n' "$SITE_USER" "$PHP_VERSION"
