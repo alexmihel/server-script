@@ -43,10 +43,9 @@ if [[ "$INSTALL_COMPOSER_DEPS" == true ]]; then
     [[ -f "$PROJECT_PATH/composer.lock" ]] || die 'Для production требуется composer.lock.'
     command -v "php$PHP_VERSION" >/dev/null || die 'Выбранный PHP CLI не установлен.'
     [[ -f /usr/local/bin/composer ]] || die 'Сначала установите Composer через server_setup.sh.'
-    cd "$PROJECT_PATH"
-    as_site "php$PHP_VERSION" /usr/local/bin/composer check-platform-reqs --lock --no-dev
-    as_site "php$PHP_VERSION" /usr/local/bin/composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
-    as_site "php$PHP_VERSION" /usr/local/bin/composer check-platform-reqs --no-dev
+    as_site "php$PHP_VERSION" /usr/local/bin/composer --working-dir="$PROJECT_PATH" check-platform-reqs --lock --no-dev
+    as_site "php$PHP_VERSION" /usr/local/bin/composer --working-dir="$PROJECT_PATH" install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+    as_site "php$PHP_VERSION" /usr/local/bin/composer --working-dir="$PROJECT_PATH" check-platform-reqs --no-dev
 fi
 as_site git -C "$PROJECT_PATH" status --short
 printf 'Репозиторий: %s, владелец: %s.\n' "$PROJECT_PATH" "$SITE_USER"

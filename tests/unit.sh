@@ -20,6 +20,17 @@ unset SITE_USER PHP_VERSION
 load_config
 [[ "$SITE_USER" == deploy && "$PHP_VERSION" == 8.3 ]]
 [[ $(stat -c %a "$CONFIG_FILE") == 600 ]]
+# Empty settings prompt, invalid input retries, and the next process reuses it.
+PROJECT_NAME=''
+NON_INTERACTIVE=false
+save_config
+ask PROJECT_NAME 'Project' <<< $'\n../invalid\nsite-stage.businesstat.ru' 2>/dev/null
+[[ "$PROJECT_NAME" == site-stage.businesstat.ru ]]
+bash -c 'source "$1"; CONFIG_FILE=$2; load_config; ask PROJECT_NAME Project; [[ "$PROJECT_NAME" == site-stage.businesstat.ru ]]' bash "$ROOT_DIR/lib/common.sh" "$CONFIG_FILE" </dev/null
+for bad in . .. /tmp/site sub/site 'site name'; do if validate PROJECT_NAME "$bad"; then exit 1; fi; done
+PROJECT_NAME=''
+NON_INTERACTIVE=true
+if (ask PROJECT_NAME Project) 2>/dev/null; then exit 1; fi
 for bad in root www-data ../test 'test;id'; do if validate SITE_USER "$bad"; then exit 1; fi; done
 for bad in 0 65536 22/tcp; do if validate SSH_PORT "$bad"; then exit 1; fi; done
 validate SSH_PORT 2222

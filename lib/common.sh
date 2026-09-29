@@ -50,7 +50,7 @@ validate() {
     local key=$1 value=$2
     case "$key" in
         SITE_USER) [[ "$value" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$value" != root && "$value" != www-data && "$value" != postgres ]] ;;
-        PROJECT_NAME) [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$ ]] ;;
+        PROJECT_NAME) [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$ ]] ;;
         PHP_VERSION) [[ "$value" =~ ^[0-9]+\.[0-9]+$ ]] ;;
         PHP_SOURCE) [[ "$value" =~ ^(auto|ubuntu|ondrej)$ ]] ;;
         GIT_PROVIDER) [[ "$value" =~ ^(github|bitbucket)$ ]] ;;
@@ -65,15 +65,25 @@ validate() {
 }
 ask() {
     local key=$1 label=$2 default=${3-} answer
-    if [[ -z ${!key:-} ]]; then
-        answer=''
-        if [[ ${NON_INTERACTIVE:-false} != true ]]; then
-            read -r -p "$label${default:+ [$default]}: " answer || die "Не получен $key"
+    while true; do
+        if [[ -z ${!key:-} ]]; then
+            answer=''
+            if [[ ${NON_INTERACTIVE:-false} != true ]]; then
+                read -r -p "$label${default:+ [$default]}: " answer || die "Не получен $key"
+            fi
+            printf -v "$key" '%s' "${answer:-$default}"
         fi
-        printf -v "$key" '%s' "${answer:-$default}"
-    fi
-    validate "$key" "${!key}" || die "Некорректное значение $key (исправьте $CONFIG_FILE)."
-    save_config
+        if validate "$key" "${!key}"; then
+            save_config
+            return 0
+        fi
+        [[ ${NON_INTERACTIVE:-false} != true ]] || die "Некорректное или пустое значение $key (исправьте $CONFIG_FILE)."
+        printf 'Некорректное или пустое значение %s. Повторите ввод.\n' "$key" >&2
+        if [[ "$key" == PROJECT_NAME ]]; then
+            printf 'Имя каталога: латинские буквы, цифры, точки, дефисы, подчёркивания; первый символ — буква или цифра, максимум 255 символов.\n' >&2
+        fi
+        printf -v "$key" '%s' ''
+    done
 }
 site_user() {
     ask SITE_USER 'Пользователь сайта'
@@ -83,7 +93,10 @@ site_user() {
     SITE_GROUP=$(id -gn "$SITE_USER")
     [[ "$SITE_HOME" == /* && "$SITE_HOME" != / && -d "$SITE_HOME" ]] || die 'Некорректный домашний каталог.'
 }
-as_site() { sudo -H -u "$SITE_USER" -- "$@"; }
+as_site() {
+    # -H changes HOME, but leaves cwd in /root when the installer starts there.
+    sudo -H -u "$SITE_USER" -- sh -c 'cd "$HOME" && exec "$@"' sh "$@"
+}
 apt_update() { apt-get update -o APT::Update::Error-Mode=any; }
 package_candidate() {
     local candidate

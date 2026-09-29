@@ -4,6 +4,12 @@ set -euo pipefail
 [[ -f /.dockerenv ]] || { echo 'Disposable Docker container required.'; exit 1; }
 cd /work
 bash tests/unit.sh
+# Reproduce installation from a directory inaccessible to the site user.
+mkdir -p /root/server-script-test
+chmod 700 /root
+cp /work/*.sh /root/server-script-test/
+cp -r /work/lib /root/server-script-test/
+run_script() { (cd /root/server-script-test; bash "$1"); }
 mkdir -p /tmp/test-bin
 # Only host services, package installation and ACME are mocked.
 for command in apt-get systemctl certbot; do
@@ -30,9 +36,9 @@ INSTALL_COMPOSER_DEPS=false
 NON_INTERACTIVE=true
 CONFIG
 useradd -m -U -s /bin/bash site_test
-bash setup_git.sh
+run_script setup_git.sh
 fingerprint=$(ssh-keygen -lf /home/site_test/.ssh/id_ed25519_github.pub)
-bash setup_git.sh
+run_script setup_git.sh
 [[ "$fingerprint" == "$(ssh-keygen -lf /home/site_test/.ssh/id_ed25519_github.pub)" ]]
 [[ $(grep -c '^Host github.com$' /home/site_test/.ssh/config) == 1 ]]
 [[ $(stat -c '%U:%a' /home/site_test/.ssh/id_ed25519_github) == site_test:600 ]]
@@ -45,8 +51,8 @@ printf '{}\n' > "$project/composer.json"
 printf '<?php echo "ok";\n' > "$project/public/index.php"
 printf '#!/bin/sh\nexit 0\n' > "$project/run.sh"
 chmod +x "$project/run.sh"
-bash setup_laravel_project.sh
-bash setup_laravel_project.sh
+run_script setup_laravel_project.sh
+run_script setup_laravel_project.sh
 sudo -H -u site_test git -C "$project" status --short >/dev/null
 sudo -H -u site_test test -x "$project/run.sh"
 sudo -H -u www-data test -r "$project/public/index.php"
@@ -68,7 +74,7 @@ chmod 777 /tmp/server-fixtures
 sudo -H -u site_test git clone --bare "$project" /tmp/server-fixtures/project.git
 sudo -H -u site_test git config --global url.file:///tmp/server-fixtures/.insteadOf git@github.com:example/
 sed -i 's/PROJECT_NAME=server_script_test/PROJECT_NAME=cloned_project/' "$CONFIG_FILE"
-bash setup_laravel_project.sh
+run_script setup_laravel_project.sh
 [[ $(stat -c %U /var/www/cloned_project/.git/config) == site_test ]]
 sudo -H -u site_test git -C /var/www/cloned_project status --short
 sed -i 's/PROJECT_NAME=cloned_project/PROJECT_NAME=server_script_test/' "$CONFIG_FILE"

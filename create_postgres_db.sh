@@ -2,7 +2,7 @@
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 init "$@"
 default_db=${PROJECT_NAME:-}
-ask DB_NAME 'Имя базы данных' "${default_db//-/_}"
+ask DB_NAME 'Имя базы данных' "${default_db//[.-]/_}"
 default_user=${SITE_USER:-$DB_NAME}
 ask DB_USER 'Пользователь базы данных' "${default_user//-/_}"
 ask DB_PORT 'Порт PostgreSQL' 5432
