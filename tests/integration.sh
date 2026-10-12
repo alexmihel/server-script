@@ -36,6 +36,68 @@ INSTALL_COMPOSER_DEPS=false
 NON_INTERACTIVE=true
 CONFIG
 useradd -m -U -s /bin/bash site_test
+# Exercise the same account/OPcache functions used by server_setup.sh.
+source /work/lib/common.sh
+source /work/lib/server_settings.sh
+init --config "$CONFIG_FILE"
+site_user
+if (configure_site_sudo) >/dev/null 2>&1; then exit 1; fi
+if id -nG site_test | grep -qw sudo; then exit 1; fi
+# Substitute only passwd's interactive entry, keeping real password storage
+# and real sudo authentication. This is a disposable test password.
+passwd() {
+    if [[ "$1" == -S ]]; then /usr/bin/passwd "$@"; else
+        printf 'site_test:Test-sudo-password-428!\n' | chpasswd
+        printf 'set\n' >> /tmp/password-set-count
+    fi
+}
+NON_INTERACTIVE=false configure_site_sudo
+configure_site_sudo
+[[ $(wc -l < /tmp/password-set-count) == 1 ]]
+unset -f passwd
+if runuser -u site_test -- sudo -k -n /usr/bin/id -u >/dev/null 2>&1; then exit 1; fi
+[[ $(printf 'Test-sudo-password-428!\n' | runuser -u site_test -- sudo -k -S -p '' /usr/bin/id -u) == 0 ]]
+printf 'opcache.validate_timestamps=0\nopcache.revalidate_freq=60\n' > /etc/php/8.3/fpm/conf.d/98-old-opcache.ini
+configure_php_opcache
+configure_php_opcache
+fpm_info=$(php-fpm8.3 -i)
+grep -Fx 'opcache.enable => On => On' <<< "$fpm_info"
+grep -Fx 'opcache.validate_timestamps => On => On' <<< "$fpm_info"
+grep -Fx 'opcache.revalidate_freq => 2 => 2' <<< "$fpm_info"
+# Incoming SSH: keep an existing key, install the client key once, and log in.
+ssh-keygen -q -t ed25519 -N '' -f /tmp/client-key
+ssh-keygen -q -t ed25519 -N '' -f /tmp/existing-key
+install -d -m 700 -o site_test -g site_test /home/site_test/.ssh
+printf '%s' "$(cat /tmp/existing-key.pub)" > /home/site_test/.ssh/authorized_keys
+chown site_test:site_test /home/site_test/.ssh/authorized_keys
+printf 'SSH_PUBLIC_KEY=%s\n' "$(cat /tmp/client-key.pub)" >> "$CONFIG_FILE"
+run_script setup_ssh_access.sh
+run_script setup_ssh_access.sh
+[[ $(grep -c '^ssh-ed25519 ' /home/site_test/.ssh/authorized_keys) == 2 ]]
+[[ $(stat -c '%U:%a' /home/site_test/.ssh/authorized_keys) == site_test:600 ]]
+cp "$CONFIG_FILE" /tmp/valid-config.env
+sed -i 's/^SSH_PUBLIC_KEY=.*/SSH_PUBLIC_KEY=not-a-key/' "$CONFIG_FILE"
+if run_script setup_ssh_access.sh >/dev/null 2>&1; then exit 1; fi
+cp /tmp/valid-config.env "$CONFIG_FILE"
+mkdir -p /run/sshd
+ssh-keygen -q -t ed25519 -N '' -f /tmp/test-host-key
+cat > /tmp/test-sshd.conf <<'SSHD'
+Port 22222
+ListenAddress 127.0.0.1
+HostKey /tmp/test-host-key
+PidFile /tmp/test-sshd.pid
+AuthorizedKeysFile .ssh/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM yes
+StrictModes yes
+AllowUsers site_test
+SSHD
+/usr/sbin/sshd -f /tmp/test-sshd.conf -E /tmp/test-sshd.log
+printf '[127.0.0.1]:22222 %s\n' "$(cat /tmp/test-host-key.pub)" > /tmp/test-known-hosts
+[[ $(ssh -i /tmp/client-key -p 22222 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/test-known-hosts site_test@127.0.0.1 id -un) == site_test ]]
+kill "$(cat /tmp/test-sshd.pid)"
 run_script setup_git.sh
 fingerprint=$(ssh-keygen -lf /home/site_test/.ssh/id_ed25519_github.pub)
 run_script setup_git.sh

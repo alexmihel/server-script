@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 022
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_KEYS='SITE_USER PROJECT_NAME REPO_URL GIT_PROVIDER PHP_VERSION PHP_SOURCE SSH_PORT DOMAIN INCLUDE_WWW CERTBOT_EMAIL DB_NAME DB_USER DB_PORT INSTALL_COMPOSER_DEPS NON_INTERACTIVE'
+CONFIG_KEYS='SITE_USER SSH_PUBLIC_KEY PROJECT_NAME REPO_URL GIT_PROVIDER PHP_VERSION PHP_SOURCE SSH_PORT DOMAIN INCLUDE_WWW CERTBOT_EMAIL DB_NAME DB_USER DB_PORT INSTALL_COMPOSER_DEPS NON_INTERACTIVE'
 die() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 known_key() { [[ " $CONFIG_KEYS " == *" $1 "* ]]; }
 load_config() {
@@ -50,6 +50,9 @@ validate() {
     local key=$1 value=$2
     case "$key" in
         SITE_USER) [[ "$value" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$value" != root && "$value" != www-data && "$value" != postgres ]] ;;
+        SSH_PUBLIC_KEY)
+            [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com)[[:blank:]]+[A-Za-z0-9+/=]+([[:blank:]].*)?$ ]] &&
+                printf '%s\n' "$value" | ssh-keygen -lf - >/dev/null 2>&1 ;;
         PROJECT_NAME) [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$ ]] ;;
         PHP_VERSION) [[ "$value" =~ ^[0-9]+\.[0-9]+$ ]] ;;
         PHP_SOURCE) [[ "$value" =~ ^(auto|ubuntu|ondrej)$ ]] ;;
@@ -106,7 +109,7 @@ package_candidate() {
 php_packages() {
     PHP_PACKAGES=()
     local ext
-    for ext in cli fpm mbstring xml curl pgsql zip gd intl bcmath soap redis; do PHP_PACKAGES+=("php${PHP_VERSION}-$ext"); done
+    for ext in cli fpm opcache mbstring xml curl pgsql zip gd intl bcmath soap redis; do PHP_PACKAGES+=("php${PHP_VERSION}-$ext"); done
 }
 php_available() {
     php_packages

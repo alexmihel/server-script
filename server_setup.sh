@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
+source "$ROOT_DIR/lib/ssh_access.sh"
+source "$ROOT_DIR/lib/server_settings.sh"
 init "$@"
 ask SITE_USER 'Пользователь сайта'
 apt_update
@@ -12,7 +14,9 @@ if ! id "$SITE_USER" >/dev/null 2>&1; then
     useradd --create-home --user-group --shell /bin/bash "$SITE_USER"
 fi
 site_user
-printf 'Пользователь сайта: %s. Административные права не добавляются.\n' "$SITE_USER"
+configure_site_sudo
+setup_ssh_access
+configure_php_opcache
 
 # Keep existing SSH configuration and firewall rules; allow every active SSH port.
 SSH_PORTS=()
@@ -43,6 +47,7 @@ APT
 for service in nginx "php${PHP_VERSION}-fpm" postgresql redis-server supervisor fail2ban; do
     systemctl enable --now "$service"
 done
+systemctl reload "php${PHP_VERSION}-fpm"
 systemctl restart fail2ban
 
 # Use the selected PHP explicitly; verify the Composer installer before execution.
@@ -57,4 +62,4 @@ actual=$("php$PHP_VERSION" -r 'echo hash_file("sha384", $argv[1]);' "$tmp_dir/in
 "php$PHP_VERSION" /usr/local/bin/composer --version
 "php$PHP_VERSION" -v
 ufw status
-printf 'Окружение установлено. SSH-настройки сохранены; настройте вход пользователя отдельно, если он требуется.\n'
+printf 'Окружение установлено. Ключ для SSH-входа пользователя добавлен; проверьте вход в новом терминале.\n'

@@ -2,3 +2,5 @@
 .env.*
 !.env.example
 *.env
+elasticsearch-*.deb
+.DS_Store

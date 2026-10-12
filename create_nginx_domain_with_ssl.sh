@@ -35,6 +35,7 @@ server {
     root $PROJECT_PATH/public;
     index index.php;
     charset utf-8;
+    client_max_body_size 64m;
     add_header X-Frame-Options "SAMEORIGIN";
     add_header X-Content-Type-Options "nosniff";
     location / {
@@ -59,8 +60,18 @@ NGINX
     fi
 fi
 [[ -L "$link" && $(readlink "$link") == "$conf" ]] || die 'Проверьте ссылку sites-enabled для домена.'
+if ! grep -q 'client_max_body_size' "$conf"; then
+    sed -i '/charset utf-8;/a\    client_max_body_size 64m;' "$conf"
+fi
+uploads_ini="/etc/php/$PHP_VERSION/fpm/conf.d/99-uploads.ini"
+cat > "$uploads_ini" <<'INI'
+; Keep aligned with nginx client_max_body_size for site sync and media uploads.
+post_max_size = 64M
+upload_max_filesize = 64M
+INI
 nginx -t
 systemctl reload nginx
+systemctl reload "php$PHP_VERSION-fpm"
 args=(-d "$DOMAIN")
 [[ "$INCLUDE_WWW" != true ]] || args+=(-d "www.$DOMAIN")
 printf 'Для сертификата DNS всех выбранных имён должен указывать на сервер, порт 80 — быть доступен.\n'
